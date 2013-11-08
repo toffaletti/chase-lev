@@ -23,7 +23,7 @@ private:
     cacheline_pad_t pad1_;
 public:
     ws_deque(size_t size = 2) : _top{0}, _bottom{0} {
-        _array.store(new array{(size_t)log(size)}, memory_order_seq_cst);
+        _array.store(new array{(size_t)log(size)}, memory_order_relaxed);
     }
 
     ~ws_deque() {
@@ -32,9 +32,9 @@ public:
 
     // push_back
     void push(T x) {
-        size_t b = _bottom.load(memory_order_seq_cst);
+        size_t b = _bottom.load(memory_order_relaxed);
         size_t t = _top.load(memory_order_seq_cst);
-        array *a = _array.load(memory_order_seq_cst);
+        array *a = _array.load(memory_order_relaxed);
         if (b - t > a->size() - 1) {
             a = a->grow(t, b).release();
             size_t ss = a->size();
@@ -42,10 +42,10 @@ public:
             _bottom.store(b + ss, memory_order_seq_cst);
             t = _top.load(memory_order_seq_cst);
             if (!_top.compare_exchange_strong(t, t + ss,
-                        memory_order_seq_cst, memory_order_seq_cst)) {
+                        memory_order_seq_cst, memory_order_relaxed)) {
                 _bottom.store(b, memory_order_seq_cst);
             }
-            b = _bottom.load(memory_order_seq_cst);
+            b = _bottom.load(memory_order_relaxed);
         }
         a->put(b, x);
         _bottom.store(b + 1, memory_order_seq_cst);
@@ -53,10 +53,10 @@ public:
 
     // pop_back 
     optional<T> take() {
-        size_t b = _bottom.load(memory_order_seq_cst) - 1;
-        array *a = _array.load(memory_order_seq_cst);
-        _bottom.store(b, memory_order_release);
-        size_t t = _top.load(memory_order_seq_cst); 
+        size_t b = _bottom.load(memory_order_relaxed) - 1;
+        array *a = _array.load(memory_order_relaxed);
+        _bottom.store(b, memory_order_seq_cst);
+        size_t t = _top.load(memory_order_relaxed);
         optional<T> x;
         if (t <= b) {
             // non-empty queue
@@ -64,7 +64,7 @@ public:
             if (t == b) {
                 // last element in queue
                 if (!_top.compare_exchange_strong(t, t + 1,
-                            memory_order_seq_cst, memory_order_seq_cst)) {
+                            memory_order_seq_cst, memory_order_relaxed)) {
                     // failed race
                     x = nullopt;
                 }
@@ -106,7 +106,7 @@ public:
         // non empty
         x = a->get(t);
         if (!_top.compare_exchange_strong(t, t + 1,
-                    memory_order_seq_cst, memory_order_seq_cst)) {
+                    memory_order_seq_cst, memory_order_relaxed)) {
             // failed race
             return make_pair(false, nullopt);
         }
@@ -132,11 +132,11 @@ private:
         }
 
         void put(size_t i, T v) {
-            VAR(_buffer)[i % size()].store(v, memory_order_seq_cst);
+            VAR(_buffer)[i % size()].store(v, memory_order_relaxed);
         }
 
         T get(size_t i) const {
-            return VAR(_buffer)[i % size()].load(memory_order_seq_cst);
+            return VAR(_buffer)[i % size()].load(memory_order_relaxed);
         }
 
         unique_ptr<array> grow(size_t top, size_t bottom) {
