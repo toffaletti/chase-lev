@@ -22,7 +22,7 @@ private:
     atomic<array *> _array;
     cacheline_pad_t pad1_;
 public:
-    ws_deque(size_t size = 2) : _top{0}, _bottom{0} {
+    ws_deque(size_t size = 1024) : _top{0}, _bottom{0} {
         _array.store(new array{(size_t)log(size)}, memory_order_relaxed);
     }
 
@@ -31,31 +31,24 @@ public:
     }
 
     // push_back
-    void push(T x) {
+    bool push(T x) {
         size_t b = _bottom.load(memory_order_relaxed);
-        size_t t = _top.load(memory_order_seq_cst);
+        size_t t = _top.load(memory_order_acquire);
         array *a = _array.load(memory_order_relaxed);
         if (b - t > a->size() - 1) {
-            a = a->grow(t, b).release();
-            size_t ss = a->size();
-            unique_ptr<array> old{_array.exchange(a, memory_order_seq_cst)};
-            _bottom.store(b + ss, memory_order_seq_cst);
-            t = _top.load(memory_order_seq_cst);
-            if (!_top.compare_exchange_strong(t, t + ss,
-                        memory_order_seq_cst, memory_order_relaxed)) {
-                _bottom.store(b, memory_order_seq_cst);
-            }
-            b = _bottom.load(memory_order_relaxed);
+            return false;
         }
         a->put(b, x);
-        _bottom.store(b + 1, memory_order_seq_cst);
+        _bottom.store(b + 1, memory_order_release);
+        return true;
     }
 
     // pop_back 
     optional<T> take() {
         size_t b = _bottom.load(memory_order_relaxed) - 1;
         array *a = _array.load(memory_order_relaxed);
-        _bottom.store(b, memory_order_seq_cst);
+        _bottom.store(b, memory_order_relaxed);
+        atomic_thread_fence(memory_order_seq_cst);
         size_t t = _top.load(memory_order_relaxed);
         optional<T> x;
         if (t <= b) {
@@ -68,12 +61,12 @@ public:
                     // failed race
                     x = nullopt;
                 }
-                _bottom.store(b + 1, memory_order_seq_cst);
+                _bottom.store(b + 1, memory_order_relaxed);
             }
         } else {
             // empty queue
             //x = nullptr;
-            _bottom.store(b + 1, memory_order_seq_cst);
+            _bottom.store(b + 1, memory_order_relaxed);
         }
         return x;
     }
@@ -84,25 +77,15 @@ public:
     //  optional<T> item
     pair<bool, optional<T> > steal() {
         optional<T> x;
-        size_t t = _top.load(memory_order_seq_cst); 
-        array *old_a = _array.load(memory_order_seq_cst);
-        size_t b = _bottom.load(memory_order_seq_cst);
-        array *a = _array.load(memory_order_seq_cst);
+        size_t t = _top.load(memory_order_acquire); 
+        atomic_thread_fence(memory_order_seq_cst);
+        size_t b = _bottom.load(memory_order_acquire);
         ssize_t size = b - t;
         if (size <= 0) {
             // empty
             return make_pair(true, x);
         }
-        if ((size % a->size()) == 0) {
-            if (a == old_a && t == _top.load(memory_order_seq_cst)) {
-                // empty
-                return make_pair(true, x);
-            } else {
-                // abort, failed race
-                return make_pair(false, nullopt);
-            }
-
-        }
+        array *a = _array.load(memory_order_acquire);
         // non empty
         x = a->get(t);
         if (!_top.compare_exchange_strong(t, t + 1,
